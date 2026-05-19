@@ -16,7 +16,7 @@ st.write(
 st.divider()
 
 
-# --- Hilfsfunktion: Video-ID aus der URL holen (UNVERÄNDERT, korrekt) ---
+# --- Hilfsfunktion: Video-ID aus der URL holen ---
 def get_video_id(text):
     """Holt die 11-stellige Video-ID aus allen gaengigen YouTube-Formaten."""
     text = text.strip()
@@ -56,6 +56,24 @@ def format_zeit(sekunden):
     """Macht aus 135 Sekunden den lesbaren String '02:15'."""
     sekunden = int(sekunden)
     return f"{sekunden // 60:02d}:{sekunden % 60:02d}"
+
+
+# --- Transkript robust abrufen (neue API-Schreibweise) ---
+def hole_transkript(video_id):
+    """
+    Ruft das Transkript mit der aktuellen API (Version 1.x) ab.
+    Schritt 1: ein API-Objekt erstellen.
+    Schritt 2: darauf .fetch() mit der Video-ID aufrufen.
+    Gibt eine Liste von dicts zurueck: {'text', 'start', 'duration'}.
+    """
+    api = YouTubeTranscriptApi()
+    sprachen = ["de", "de-DE", "en", "en-US", "en-GB"]
+
+    # .fetch() liefert ein FetchedTranscript-Objekt.
+    # .to_raw_data() macht daraus die einfache Liste von dicts,
+    # die unser restlicher Code (Schritt 5) schon erwartet.
+    fetched = api.fetch(video_id, languages=sprachen)
+    return fetched.to_raw_data()
 
 
 # --- Signalwörter mit Punktwerten ---
@@ -104,29 +122,23 @@ def analysiere_transkript(transcript):
 def lade_clip(video_id, start_sekunde, dauer):
     """
     Laedt NUR einen kurzen Ausschnitt herunter (nicht das ganze Video).
-    Nutzt den 'download_ranges'-Mechanismus von yt-dlp, damit nur das
-    benoetigte Stueck geladen wird -> ressourcenschonend.
-
+    Nutzt 'download_ranges' von yt-dlp -> ressourcenschonend.
     Gibt den Pfad zur fertigen Datei zurueck oder wirft eine Exception.
     """
     import yt_dlp
 
-    start = max(0, int(start_sekunde) - 2)  # 2s Vorlauf als Puffer
-    ende = start + int(dauer) + 2           # 2s Nachlauf als Puffer
+    start = max(0, int(start_sekunde) - 2)   # 2s Vorlauf als Puffer
+    ende = start + int(dauer) + 2            # 2s Nachlauf als Puffer
 
-    # Zielordner: temporaeres Verzeichnis (wird automatisch aufgeraeumt)
     ausgabe_ordner = tempfile.mkdtemp()
     ausgabe_pfad = os.path.join(ausgabe_ordner, "clip.mp4")
-
-    url = f"https://www.youtube.com/watch?v={video_id}"
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
 
     ydl_opts = {
-        # Nicht zu grosse Auflösung -> spart RAM und Zeit
         "format": "bestvideo[height<=720]+bestaudio/best[height<=720]",
         "outtmpl": ausgabe_pfad,
         "quiet": True,
         "no_warnings": True,
-        # DAS ist der Kern: nur diesen Zeitbereich laden
         "download_ranges": yt_dlp.utils.download_range_func(
             None, [(start, ende)]
         ),
@@ -134,7 +146,7 @@ def lade_clip(video_id, start_sekunde, dauer):
     }
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
+        ydl.download([video_url])
 
     if not os.path.exists(ausgabe_pfad):
         raise FileNotFoundError(
@@ -164,21 +176,19 @@ if st.button("🚀 Highlights suchen", type="primary"):
         else:
             with st.spinner("Hole das Transkript..."):
                 try:
-                    transcript = YouTubeTranscriptApi.get_transcript(
-                        video_id,
-                        languages=["de", "de-DE", "en", "en-US", "en-GB"]
-                    )
+                    transcript = hole_transkript(video_id)
                     highlights = analysiere_transkript(transcript)
                     highlights.sort(key=lambda h: h["score"], reverse=True)
 
-                    # Im Session-State merken, damit die Clip-Buttons
-                    # nach einem Klick nicht alles zuruecksetzen
                     st.session_state["video_id"] = video_id
                     st.session_state["highlights"] = highlights[:15]
                     st.session_state["transkript_geladen"] = True
                 except Exception as e:
                     st.session_state["transkript_geladen"] = False
-                    st.error("Konnte kein Transkript laden.")
+                    st.error(
+                        "Konnte kein Transkript laden. Mögliche Gründe: "
+                        "keine Untertitel, deaktiviert oder Video privat."
+                    )
                     st.caption(f"Technische Details: {e}")
 
 
@@ -200,7 +210,6 @@ if st.session_state.get("transkript_geladen"):
                 st.write(h["text"])
                 st.caption("Signale: " + ", ".join(h["signale"]))
 
-                # Eindeutiger key pro Button ist Pflicht in Streamlit
                 if st.button(
                     f"🎬 Diesen {clip_laenge}s-Clip generieren",
                     key=f"clip_{i}"
@@ -219,14 +228,18 @@ if st.session_state.get("transkript_geladen"):
                                 st.download_button(
                                     "⬇️ Clip herunterladen",
                                     f,
-                                    file_name=f"highlight_{zeit.replace(':','-')}.mp4",
+                                    file_name=(
+                                        "highlight_"
+                                        + zeit.replace(":", "-")
+                                        + ".mp4"
+                                    ),
                                     mime="video/mp4",
                                     key=f"dl_{i}"
                                 )
                         except Exception as e:
                             st.error(
-                                "❌ Download fehlgeschlagen. Das ist auf der "
-                                "kostenlosen Cloud leider häufig – meist weil "
-                                "YouTube Server-Downloads blockiert."
+                                "❌ Download fehlgeschlagen. Auf der "
+                                "kostenlosen Cloud ist das leider häufig – "
+                                "meist blockiert YouTube Server-Downloads."
                             )
                             st.caption(f"Technische Details: {e}")
