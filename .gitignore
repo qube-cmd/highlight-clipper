@@ -1,2 +1,5 @@
 client_secret.json
 token.json
+auth_config.toml
+clips.db
+clips_arbeit/
